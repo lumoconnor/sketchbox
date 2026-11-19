@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grid Toy</title>
+<style>
+  :root { --page: #ece8e2; --ink: #222; --hover: rgba(0,0,0,.06); --sel: #222; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  /* no native long-press behaviour: callouts, selection, magnifier, tap flash, image drag */
+  * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; -webkit-user-drag: none; }
+  html, body { overscroll-behavior: none; }
+  body { background: var(--page); color: var(--ink); display: flex; overflow: hidden; }
+  #side { flex: none; display: flex; flex-direction: column; justify-content: space-between; gap: 16px; padding: 16px 0 16px 10px; }
+  #palette { touch-action: pan-x pan-y; overflow-y: auto; display: grid; grid-template-columns: repeat(3, 40px); gap: 8px; align-content: start; padding: 6px; scrollbar-width: none; }
+  #palette::-webkit-scrollbar { display: none; }
+  .gap { grid-column: 1 / -1; height: 6px; }
+  .tile { width: 40px; height: 40px; border-radius: 8px; cursor: pointer; display: block; }
+  .tile.sel { box-shadow: 0 0 0 3px var(--sel); }
+  #tools { display: grid; grid-template-columns: repeat(3, 40px); gap: 8px; padding: 6px; }
+  button { width: 40px; height: 40px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); cursor: pointer; display: grid; place-items: center; padding: 0; opacity: .75; }
+  button:hover { background: var(--hover); opacity: 1; }
+  button.off { opacity: .35; }
+  button.armed { background: #e5484d; color: #fff; opacity: 1; }
+  button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  #stage { flex: 1; min-width: 0; display: grid; place-items: center; padding: 16px; }
+  @media (max-width: 700px) { /* phones: palette becomes a strip along the bottom */
+    body { flex-direction: column-reverse; }
+    #side { flex-direction: row; padding: 0 12px 12px; gap: 12px; }
+    #palette, #tools { grid-auto-flow: column; grid-template-columns: none; grid-template-rows: repeat(2, 40px); }
+    #palette { overflow-x: auto; overflow-y: hidden; flex: 1; }
+    .gap { grid-column: auto; grid-row: span 2; width: 4px; height: auto; }
+    #stage { padding: 12px; }
+  }
+  #map { display: block; border-radius: 10px; cursor: crosshair; touch-action: none; }
+</style>
+</head>
+<body>
+<aside id="side">
+  <div id="palette"></div>
+  <div id="tools">
+    <button id="rotate" title="Rotate (R)"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg></button>
+    <button id="shuffle" title="New colours"><svg viewBox="0 0 24 24"><path d="M3 7h3c5 0 7 10 12 10h3"/><path d="M3 17h3c5 0 7-10 12-10h3"/><path d="M18 4l3 3-3 3M18 14l3 3-3 3"/></svg></button>
+    <button id="grid" title="Grid lines"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1"/><path d="M4 10h16M4 15h16M10 4v16M15 4v16"/></svg></button>
+    <button id="clear" title="Clear all (tap twice)"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 7V4h4v3M6 7l1 13h10l1-13"/></svg></button>
+    <button id="export" title="Save to file"><svg viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
+    <button id="import" title="Open file"><svg viewBox="0 0 24 24"><path d="M12 15V4M7 9l5-5 5 5M5 20h14"/></svg></button>
+    <input id="file" type="file" accept=".json,application/json" hidden>
+  </div>
+</aside>
+<main id="stage"><canvas id="map"></canvas></main>
+
+<script>
+(() => {
+  const COLS = 40, ROWS = 24, CELL = 32;
+  const STORE = 'grid-toy-flat-v1';
+
+  // ---------------- colour palette ----------------
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const clamp = v => Math.max(0, Math.min(100, v));
+  function hsl(h, s, l) { // returns rgb() so colours can be blended during palette fades
+    h = ((h % 360) + 360) % 360; s = clamp(s) / 100; l = clamp(l) / 100;
+    const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l), f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+    return `rgb(${Math.round(f(0) * 255)},${Math.round(f(8) * 255)},${Math.round(f(4) * 255)})`;
+  }
+  const parse = c => { const m = c.match(/[\d.]+/g).map(Number); return [m[0], m[1], m[2], m[3] ?? 1]; };
+  function mix(a, b, t) { const x = parse(a), y = parse(b), v = x.map((n, i) => n + (y[i] - n) * t);
+    return `rgba(${v[0] | 0},${v[1] | 0},${v[2] | 0},${v[3].toFixed(3)})`; }
+  const SCHEMES = {
+    Analogous: [0, 25, -25, 50],
+    Complementary: [0, 180, 20, 200],
+    Triadic: [0, 120, 240, 30],
+    'Split complementary': [0, 150, 210, 30],
+    Tetradic: [0, 90, 180, 270],
+    Monochrome: [0, 0, 6, -6],
+  };
+  let pal, schemeName;
+  function newPalette() {
+    const names = Object.keys(SCHEMES); schemeName = names[(Math.random() * names.length) | 0];
+    const h = rnd(0, 360), s = rnd(50, 74), dark = Math.random() < 0.4;
+    let lights = [rnd(50, 58), rnd(60, 68), rnd(40, 48), rnd(68, 76)];
+    if (schemeName === 'Monochrome') lights = [34, 48, 62, 76];
+    const cols = SCHEMES[schemeName].map((o, i) => hsl(h + o, s + rnd(-10, 6), lights[i]));
+    cols.push(dark ? hsl(h + 20, 30, 94) : hsl(h + 20, 14, 64));   // cream on dark, warm grey on light
+    cols.push(dark ? hsl(h + 200, 18, 42) : hsl(h + 200, 35, 18));  // slate on dark, ink on light
+    const pageL = dark ? 8 : 86, selI = [0, 1, 2, 3].reduce((a, b) => Math.abs(lights[b] - pageL) > Math.abs(lights[a] - pageL) ? b : a);
+    pal = { cols, sel: cols[selI], dark, page: dark ? hsl(h + 200, 25, 8) : hsl(h + 30, 22, 86), ink: dark ? hsl(h + 30, 30, 92) : hsl(h + 200, 30, 16), bg: dark ? hsl(h + 200, 25, 12) : hsl(h + 30, 30, 93), line: dark ? 'rgba(255,255,255,.06)' : 'rgba(0,0,0,.07)' };
+  }
+  // ---------------- flat shapes (32x32 cell, drawn before rotation) ----------------
+  const R = 32, PI = Math.PI;
+  const rect = (g, x, y, w, h) => g.rect(x, y, w, h);
+  const poly = (g, pts) => { g.moveTo(...pts[0]); for (const p of pts.slice(1)) g.lineTo(...p); g.closePath(); };
+  const circ = (g, x, y, r, ccw) => { g.moveTo(x + r, y); g.arc(x, y, r, 0, 2 * PI, !!ccw); };
+  const SHAPES = [
+    { id: 'square', name: 'Square', cat: 'Blocks', path: g => rect(g, 0, 0, R, R) },
+    { id: 'half', name: 'Half', cat: 'Blocks', path: g => rect(g, 0, 16, R, 16) },
+    { id: 'quarter', name: 'Quarter', cat: 'Blocks', path: g => rect(g, 0, 16, 16, 16) },
+    { id: 'bar', name: 'Bar', cat: 'Blocks', path: g => rect(g, 0, 12, R, 8) },
+    { id: 'diag', name: 'Diagonal', cat: 'Blocks', path: g => poly(g, [[0, 0], [R, R], [0, R]]) },
+    { id: 'peak', name: 'Peak', cat: 'Blocks', path: g => poly(g, [[0, R], [16, 0], [R, R]]) },
+    { id: 'qcircle', name: 'Quarter circle', cat: 'Curves', path: g => { g.moveTo(0, R); g.arc(0, R, R, -PI / 2, 0); g.closePath(); } },
+    { id: 'concave', name: 'Concave', cat: 'Curves', path: g => { g.moveTo(0, 0); g.lineTo(R, 0); g.lineTo(R, R); g.arc(0, R, R, 0, -PI / 2, true); g.closePath(); } },
+    { id: 'semi', name: 'Semicircle', cat: 'Curves', path: g => { g.moveTo(0, R); g.arc(16, R, 16, PI, 0); g.closePath(); } },
+    { id: 'circle', name: 'Circle', cat: 'Curves', path: g => circ(g, 16, 16, 16) },
+    { id: 'qring', name: 'Arc', cat: 'Curves', path: g => { g.moveTo(0, 0); g.arc(0, R, R, -PI / 2, 0); g.lineTo(16, R); g.arc(0, R, 16, 0, -PI / 2, true); g.closePath(); } },
+    { id: 'leaf', name: 'Leaf', cat: 'Curves', path: g => { g.moveTo(0, R); g.arc(R, R, R, PI, 1.5 * PI); g.arc(0, 0, R, 0, PI / 2); g.closePath(); } },
+    { id: 'ring', name: 'Ring', cat: 'Patterns', path: g => { circ(g, 16, 16, 16); circ(g, 16, 16, 8, true); } },
+    { id: 'dot', name: 'Dot', cat: 'Patterns', path: g => circ(g, 16, 16, 7) },
+    { id: 'diamond', name: 'Diamond', cat: 'Patterns', path: g => poly(g, [[16, 0], [R, 16], [16, R], [0, 16]]) },
+    { id: 'stripes', name: 'Stripes', cat: 'Patterns', path: g => { for (let i = 0; i < 4; i++) rect(g, 0, i * 8, R, 4); } },
+    { id: 'dots', name: 'Dots', cat: 'Patterns', path: g => { for (const x of [8, 24]) for (const y of [8, 24]) circ(g, x, y, 4.5); } },
+    { id: 'checker', name: 'Checker', cat: 'Patterns', path: g => { rect(g, 0, 0, 16, 16); rect(g, 16, 16, 16, 16); } },
+    { id: 'plus', name: 'Plus', cat: 'Patterns', path: g => { rect(g, 12, 0, 8, R); rect(g, 0, 12, 12, 8); rect(g, 20, 12, 12, 8); } },
+    { id: 'chevron', name: 'Chevron', cat: 'Patterns', path: g => poly(g, [[0, 4], [16, 18], [R, 4], [R, 14], [16, 28], [0, 14]]) },
+  ];
+  const BY_ID = Object.fromEntries(SHAPES.map(s => [s.id, s]));
+
+  // every shape gets its own colour from the palette; both reshuffle on each load
+  const SLOTS = [0, 1, 2, 3, 0, 1, 2, 3, 4, 5];
+  function reshuffle() {
+    newPalette();
+    const ids = SHAPES.map(s => s.id);
+    for (let i = ids.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [ids[i], ids[j]] = [ids[j], ids[i]]; }
+    const off = (Math.random() * SLOTS.length) | 0;
+    pal.of = {}; ids.forEach((id, i) => pal.of[id] = pal.cols[SLOTS[(i + off) % SLOTS.length]]);
+  }
+  reshuffle();
+
+  function drawTile(g, s, col, rot, x, y) {
+    g.save(); g.translate(x + 16, y + 16); g.rotate(rot * PI / 2); g.translate(-16, -16);
+    g.beginPath(); s.path(g); g.fillStyle = col; g.fill('evenodd');
+    g.restore();
+  }
+
+  // ---------------- state ----------------
+  let map = new Array(COLS * ROWS).fill(null); // each cell: null or [shapeId, rotation]
+  let selShape = 'square', selRot = 0, showGrid = true;
+
+  const say = () => {};
+  const serialize = () => ({ version: 4, cols: COLS, rows: ROWS, cells: map });
+  function save() { try { localStorage.setItem(STORE, JSON.stringify(serialize())); } catch (e) {} }
+  function load(d) {
+    if (!d || !Array.isArray(d.cells)) throw new Error('not a Grid Toy file');
+    const w = d.cols || COLS, h = d.rows || ROWS, next = new Array(COLS * ROWS).fill(null);
+    for (let y = 0; y < Math.min(h, ROWS); y++) for (let x = 0; x < Math.min(w, COLS); x++) {
+      const v = d.cells[y * w + x];
+      if (Array.isArray(v) && BY_ID[v[0]]) next[y * COLS + x] = [v[0], Math.abs(v[v.length - 1] | 0) % 4]; // older saves were [shape, colour, rotation]
+    }
+    map = next;
+  }
+  try { const raw = localStorage.getItem(STORE); if (raw) load(JSON.parse(raw)); } catch (e) {}
+
+  // ---------------- sidebar ----------------
+  const palette = document.getElementById('palette');
+  const previews = [];
+  const ERASER = { id: 'erase', name: 'Eraser', cat: 'Blocks' }; // first tile of the set, no separate group
+  function drawEraser(g, x, y, col) { // an X
+    g.save(); g.strokeStyle = col; g.lineWidth = 2.5; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(x + 11, y + 11); g.lineTo(x + 21, y + 21); g.moveTo(x + 21, y + 11); g.lineTo(x + 11, y + 21); g.stroke(); g.restore();
+  }
+  const ALL = [ERASER, ...SHAPES];
+  let prevCat = null;
+  for (const s of ALL) {
+    if (prevCat && s.cat !== prevCat) { const g = document.createElement('div'); g.className = 'gap'; palette.appendChild(g); }
+    prevCat = s.cat;
+    const c = document.createElement('canvas'); c.className = 'tile'; c.dataset.id = s.id; c.title = s.name;
+    const r = Math.max(2, Math.round(devicePixelRatio || 1)); c.width = c.height = 32 * r;
+    c.onclick = () => { selShape = s.id; refreshSidebar(); }; palette.appendChild(c);
+    previews.push([s, c, r]);
+  }
+  function refreshSidebar() {
+    const root = document.documentElement.style;
+    root.setProperty('--page', pal.page); root.setProperty('--ink', pal.ink); root.setProperty('--sel', pal.sel); root.setProperty('--hover', pal.dark ? 'rgba(255,255,255,.08)' : 'rgba(0,0,0,.06)');
+    for (const [s, cv, r] of previews) {
+      const g = cv.getContext('2d'); g.setTransform(r, 0, 0, r, 0, 0);
+      g.fillStyle = pal.bg; g.fillRect(0, 0, 32, 32);
+      if (s === ERASER) drawEraser(g, 0, 0, pal.ink); else { g.save(); g.translate(4, 4); g.scale(.75, .75); drawTile(g, s, pal.of[s.id], selRot, 0, 0); g.restore(); }
+    }
+    for (const el of palette.querySelectorAll('.tile')) el.classList.toggle('sel', el.dataset.id === selShape);
+  }
+  refreshSidebar();
+
+  // ---------------- map ----------------
+  const cv = document.getElementById('map');
+  const dpr = Math.max(1, Math.round(devicePixelRatio || 1));
+  const W = COLS * CELL, H = ROWS * CELL;
+  const ctx = cv.getContext('2d');
+  const stage = document.getElementById('stage');
+  function fit() { // scale the board to fill the space beside the palette
+    const pad = innerWidth <= 700 ? 24 : 32, sc = Math.min((stage.clientWidth - pad) / W, (stage.clientHeight - pad) / H), k = dpr * Math.max(1, sc);
+    cv.style.width = W * sc + 'px'; cv.style.height = H * sc + 'px';
+    cv.width = Math.round(W * k); cv.height = Math.round(H * k); ctx.setTransform(k, 0, 0, k, 0, 0); render();
+    // line the palette up with the board's top edge and the buttons with its bottom edge
+    const side = document.getElementById('side'), b = cv.getBoundingClientRect(), wide = innerWidth > 700;
+    side.style.paddingTop = wide ? b.top - 6 + 'px' : ''; side.style.paddingBottom = wide ? innerHeight - b.bottom - 6 + 'px' : '';
+  }
+  addEventListener('resize', fit);
+  let hover = null;
+
+  function render() {
+    ctx.fillStyle = pal.bg; ctx.fillRect(0, 0, W, H);
+    if (showGrid) {
+      ctx.strokeStyle = pal.line; ctx.lineWidth = 1; ctx.beginPath();
+      for (let i = 1; i < COLS; i++) { ctx.moveTo(i * CELL + .5, 0); ctx.lineTo(i * CELL + .5, H); }
+      for (let i = 1; i < ROWS; i++) { ctx.moveTo(0, i * CELL + .5); ctx.lineTo(W, i * CELL + .5); }
+      ctx.stroke();
+    }
+    const at = i => [(i % COLS) * CELL, ((i / COLS) | 0) * CELL];
+    for (let i = 0; i < map.length; i++) if (map[i]) drawTile(ctx, BY_ID[map[i][0]], pal.of[map[i][0]], map[i][1], ...at(i));
+    if (hover != null) {
+      const [x, y] = at(hover);
+      if (selShape === 'erase') drawEraser(ctx, x, y, pal.ink);
+      else { ctx.globalAlpha = .5; drawTile(ctx, BY_ID[selShape], pal.of[selShape], selRot, x, y); ctx.globalAlpha = 1; }
+    }
+  }
+  let raf = 0; const queue = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); };
+
+  // ---------------- painting ----------------
+  let painting = 0, last = null, dirty = false, tapCell = null; // painting: 1 place, 2 erase
+  function cellAt(e) {
+    const r = cv.getBoundingClientRect();
+    const x = Math.floor((e.clientX - r.left) * W / r.width / CELL), y = Math.floor((e.clientY - r.top) * H / r.height / CELL);
+    return x >= 0 && y >= 0 && x < COLS && y < ROWS ? y * COLS + x : null;
+  }
+  function apply(i) {
+    if (i == null) return;
+    const v = painting === 2 || selShape === 'erase' ? null : [selShape, selRot];
+    const cur = map[i];
+    if ((cur && v && cur.join() === v.join()) || (!cur && !v)) return;
+    map[i] = v; dirty = true;
+  }
+  function line(a, b) { // fill the gaps on fast drags
+    let x0 = a % COLS, y0 = (a / COLS) | 0; const x1 = b % COLS, y1 = (b / COLS) | 0;
+    const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1; let err = dx + dy;
+    for (;;) { apply(y0 * COLS + x0); if (x0 === x1 && y0 === y1) break; const e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x0 += sx; } if (e2 <= dx) { err += dx; y0 += sy; } }
+  }
+  addEventListener('contextmenu', e => e.preventDefault());
+  addEventListener('selectstart', e => e.preventDefault());
+  addEventListener('dragstart', e => e.preventDefault());
+  addEventListener('touchstart', e => { if (e.target === cv) e.preventDefault(); }, { passive: false }); // stops iOS long-press magnifier/callout on the board
+  cv.addEventListener('pointerdown', e => {
+    if (e.button !== 0 && e.button !== 2) return;
+    painting = e.button === 2 ? 2 : 1; cv.setPointerCapture(e.pointerId);
+    last = cellAt(e);
+    const cur = last != null && map[last];
+    // pressing on a tile of the selected shape might be a tap-to-rotate: decide on release
+    if (painting === 1 && cur && cur[0] === selShape) tapCell = last; else apply(last);
+    queue();
+  });
+  cv.addEventListener('pointermove', e => {
+    const i = cellAt(e); hover = painting === 2 ? null : i;
+    if (painting && i != null && i !== last) tapCell = null; // it's a drag, not a tap
+    if (painting && i != null && tapCell == null) { last != null ? line(last, i) : apply(i); last = i; }
+    queue();
+  });
+  const stop = e => {
+    if (!painting) return;
+    if (tapCell != null && e.type === 'pointerup' && cellAt(e) === tapCell) { // a clean tap on a matching tile rotates it
+      const cur = map[tapCell]; map[tapCell] = [cur[0], (cur[1] + 1) % 4]; selRot = map[tapCell][1]; dirty = true; refreshSidebar(); queue();
+    }
+    tapCell = null; painting = 0; last = null; if (dirty) { save(); dirty = false; }
+  };
+  cv.addEventListener('pointerup', stop); cv.addEventListener('pointercancel', stop);
+  cv.addEventListener('pointerleave', () => { hover = null; queue(); });
+  function rotate(d) { selRot = (selRot + d + 4) % 4; refreshSidebar(); queue(); }
+  document.getElementById('rotate').onclick = () => rotate(1);
+  cv.addEventListener('wheel', e => { e.preventDefault(); rotate(e.deltaY > 0 ? 1 : -1); }, { passive: false });
+  addEventListener('keydown', e => { if (e.key === 'r' || e.key === 'R') rotate(e.shiftKey ? -1 : 1); });
+
+  // ---------------- buttons ----------------
+  // shuffle fades the whole screen (page, board, tiles, swatches, ring) together from JS
+  let fading = 0;
+  document.getElementById('shuffle').onclick = () => {
+    const from = pal; cancelAnimationFrame(fading); reshuffle(); const to = pal, t0 = performance.now(), DUR = 450;
+    const keys = ['page', 'ink', 'sel', 'bg', 'line'];
+    const step = now => {
+      const p = Math.min(1, (now - t0) / DUR), t = p < .5 ? 2 * p * p : 1 - (-2 * p + 2) ** 2 / 2; // ease in-out
+      const v = { ...to, of: {} };
+      for (const k of keys) v[k] = mix(from[k], to[k], t);
+      for (const id in to.of) v.of[id] = mix(from.of[id], to.of[id], t);
+      pal = p < 1 ? v : to; refreshSidebar(); render();
+      if (p < 1) fading = requestAnimationFrame(step); else pal = to;
+    };
+    fading = requestAnimationFrame(step);
+  };
+  const gridBtn = document.getElementById('grid');
+  gridBtn.onclick = () => { showGrid = !showGrid; gridBtn.classList.toggle('off', !showGrid); queue(); };
+  // confirm() is blocked in some embedded previews, so clearing asks for a second tap instead
+  const clearBtn = document.getElementById('clear'); let armed = 0;
+  clearBtn.onclick = () => {
+    if (!armed) { clearBtn.classList.add('armed'); armed = setTimeout(() => { armed = 0; clearBtn.classList.remove('armed'); }, 2500); return; }
+    clearTimeout(armed); armed = 0; clearBtn.classList.remove('armed');
+    map.fill(null); save(); queue();
+  };
+  document.getElementById('export').onclick = () => {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(serialize())], { type: 'application/json' }));
+    a.download = 'grid-toy.json'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    say('Exported grid-toy.json');
+  };
+  const file = document.getElementById('file');
+  document.getElementById('import').onclick = () => file.click();
+  file.onchange = async () => {
+    const f = file.files[0]; file.value = ''; if (!f) return;
+    try { load(JSON.parse(await f.text())); save(); queue(); say('Imported ' + f.name); }
+    catch (e) { say('Could not read that file: ' + e.message); }
+  };
+
+  fit();
+})();
+</script>
+</body>
+</html>
