@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sketchbox</title>
+<style>
+  :root { --page: #ece8e2; --ink: #222; --mute: #8a847c; --hover: rgba(0,0,0,.06); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: var(--page); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 56px 16px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 32px; letter-spacing: -.01em; }
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+  a { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 12px 14px; margin: 0 -14px; border-radius: 8px; color: inherit; text-decoration: none; }
+  a:hover { background: var(--hover); }
+  .name { font-weight: 500; }
+  .note { color: var(--mute); font-size: 14px; }
+  .soon .name { color: var(--mute); }
+</style>
+</head>
+<body>
+<main>
+  <h1>sketchbox</h1>
+  <ul>
+    <li><a href="grid-toy/"><span class="name">grid toy</span><span class="note">block builder</span></a></li>
+    <li class="soon"><a href="micro-write/"><span class="name">micro write</span><span class="note">soon</span></a></li>
+    <li class="soon"><a href="micro-sheet/"><span class="name">micro sheet</span><span class="note">soon</span></a></li>
+    <li class="soon"><a href="micro-draw/"><span class="name">micro draw</span><span class="note">soon</span></a></li>
+  </ul>
+</main>
+</body>
+</html>
