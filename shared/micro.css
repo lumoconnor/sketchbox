@@ -1,0 +1,57 @@
+/* micro office: shared styles */
+:root {
+  --bg: #fbfaf7;
+  --fg: #222;
+  --muted: #9a968e;
+  --line: #e6e2da;
+  --accent: #3b5bdb;
+  --font: Charter, "Iowan Old Style", Georgia, "Times New Roman", serif;
+  --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --col: 38rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1b1b1a; --fg: #e6e3dc; --muted: #77736b; --line: #2f2e2b; --accent: #8ea6ff;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1b1b1a; --fg: #e6e3dc; --muted: #77736b; --line: #2f2e2b; --accent: #8ea6ff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body { font: 1.125rem/1.7 var(--font); min-height: 100vh; }
+::selection { background: color-mix(in srgb, var(--accent) 25%, transparent); }
+
+.page { max-width: var(--col); margin: 0 auto; padding: 5rem 1rem 6rem; }
+
+/* toolbar: fades in on hover or focus */
+.bar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 2;
+  display: flex; justify-content: center; gap: .25rem; padding: .6rem;
+  flex-wrap: wrap; background: var(--bg);
+  font: .8rem var(--ui);
+}
+.bar > * { opacity: .4; transition: opacity .2s; }
+.bar:hover > *, .bar:focus-within > *, .bar .on { opacity: 1; }
+@media (hover: none) { .bar > * { opacity: 1; } }  /* touch screens can't hover */
+.bar button {
+  font: inherit; color: var(--muted); background: none; border: 0;
+  padding: .3rem .55rem; border-radius: .3rem; cursor: pointer;
+}
+.bar button:hover { color: var(--fg); background: var(--line); }
+.bar button.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }  /* active style */
+.bar .sep { width: 1px; background: var(--line); margin: .2rem .3rem; }
+
+/* quiet footer */
+.foot {
+  position: fixed; bottom: 0; left: 0; right: 0; padding: .6rem 1rem;
+  text-align: center; font: .75rem var(--ui); color: var(--muted);
+  background: linear-gradient(transparent, var(--bg) 60%);
+}
+
+@media print {
+  .bar, .foot { display: none; }
+  .page { padding: 0; max-width: none; }
+  body { background: #fff; color: #000; }
+}
