@@ -127,8 +127,16 @@
   }
   reshuffle();
 
-  function drawTile(g, s, col, rot, x, y) {
-    g.save(); g.translate(x + 16, y + 16); g.rotate(rot * PI / 2); g.translate(-16, -16);
+  // k = device pixels per board unit. When given, the cell is snapped to whole device pixels so
+  // neighbouring tiles share exact edges (no anti-aliased seams when the board is scaled).
+  function drawTile(g, s, col, rot, x, y, k) {
+    let x0 = x, y0 = y, w = 32, h = 32;
+    g.save();
+    if (k) { // work in whole device pixels so float error can't leave partly covered edge pixels
+      x0 = Math.round(x * k); y0 = Math.round(y * k); w = Math.round((x + 32) * k) - x0; h = Math.round((y + 32) * k) - y0;
+      g.setTransform(1, 0, 0, 1, 0, 0);
+    }
+    g.translate(x0 + w / 2, y0 + h / 2); g.scale(w / 32, h / 32); g.rotate(rot * PI / 2); g.translate(-16, -16);
     g.beginPath(); s.path(g); g.fillStyle = col; g.fill('evenodd');
     g.restore();
   }
@@ -187,10 +195,12 @@
   const W = COLS * CELL, H = ROWS * CELL;
   const ctx = cv.getContext('2d');
   const stage = document.getElementById('stage');
+  let K = 1;
   function fit() { // scale the board to fill the space beside the palette
     const pad = innerWidth <= 700 ? 24 : 32, sc = Math.min((stage.clientWidth - pad) / W, (stage.clientHeight - pad) / H), k = dpr * Math.max(1, sc);
     cv.style.width = W * sc + 'px'; cv.style.height = H * sc + 'px';
-    cv.width = Math.round(W * k); cv.height = Math.round(H * k); ctx.setTransform(k, 0, 0, k, 0, 0); render();
+    cv.width = Math.round(W * k); cv.height = Math.round(H * k);
+    K = cv.width / W; ctx.setTransform(K, 0, 0, K, 0, 0); render();
     // line the palette up with the board's top edge and the buttons with its bottom edge
     const side = document.getElementById('side'), b = cv.getBoundingClientRect(), wide = innerWidth > 700;
     side.style.paddingTop = wide ? b.top - 6 + 'px' : ''; side.style.paddingBottom = wide ? innerHeight - b.bottom - 6 + 'px' : '';
@@ -207,11 +217,11 @@
       ctx.stroke();
     }
     const at = i => [(i % COLS) * CELL, ((i / COLS) | 0) * CELL];
-    for (let i = 0; i < map.length; i++) if (map[i]) drawTile(ctx, BY_ID[map[i][0]], pal.of[map[i][0]], map[i][1], ...at(i));
+    for (let i = 0; i < map.length; i++) if (map[i]) drawTile(ctx, BY_ID[map[i][0]], pal.of[map[i][0]], map[i][1], ...at(i), K);
     if (hover != null) {
       const [x, y] = at(hover);
       if (selShape === 'erase') drawEraser(ctx, x, y, pal.ink);
-      else { ctx.globalAlpha = .5; drawTile(ctx, BY_ID[selShape], pal.of[selShape], selRot, x, y); ctx.globalAlpha = 1; }
+      else { ctx.globalAlpha = .5; drawTile(ctx, BY_ID[selShape], pal.of[selShape], selRot, x, y, K); ctx.globalAlpha = 1; }
     }
   }
   let raf = 0; const queue = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); };
