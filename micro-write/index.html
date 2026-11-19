@@ -5,19 +5,261 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>micro write</title>
 <style>
-  :root { --page: #ece8e2; --ink: #222; --mute: #8a847c; }
-  html, body { margin: 0; height: 100%; }
-  body { background: var(--page); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; display: grid; place-items: center; text-align: center; padding: 16px; box-sizing: border-box; }
-  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
-  p { color: var(--mute); margin: 0 0 24px; }
-  a { color: inherit; }
+/* shared micro office styles: keep in sync with ../shared/micro.css */
+:root {
+  --bg: #fbfaf7;
+  --fg: #222;
+  --muted: #9a968e;
+  --line: #e6e2da;
+  --accent: #3b5bdb;
+  --font: Charter, "Iowan Old Style", Georgia, "Times New Roman", serif;
+  --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --col: 38rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1b1b1a; --fg: #e6e3dc; --muted: #77736b; --line: #2f2e2b; --accent: #8ea6ff;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1b1b1a; --fg: #e6e3dc; --muted: #77736b; --line: #2f2e2b; --accent: #8ea6ff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body { font: 1.125rem/1.7 var(--font); min-height: 100vh; }
+::selection { background: color-mix(in srgb, var(--accent) 25%, transparent); }
+
+.page { max-width: var(--col); margin: 0 auto; padding: 5rem 1rem 6rem; }
+
+/* toolbar: fades in on hover or focus */
+.bar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 2;
+  display: flex; justify-content: center; gap: .25rem; padding: .6rem;
+  flex-wrap: wrap; background: var(--bg);
+  font: .8rem var(--ui);
+}
+.bar > * { opacity: .4; transition: opacity .2s; }
+.bar:hover > *, .bar:focus-within > *, .bar .on { opacity: 1; }
+@media (hover: none) { .bar > * { opacity: 1; } }  /* touch screens can't hover */
+.bar button {
+  font: inherit; color: var(--muted); background: none; border: 0;
+  padding: .3rem .55rem; border-radius: .3rem; cursor: pointer;
+}
+.bar button:hover { color: var(--fg); background: var(--line); }
+.bar button.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }  /* active style */
+.bar .sep { width: 1px; background: var(--line); margin: .2rem .3rem; }
+
+/* quiet footer */
+.foot {
+  position: fixed; bottom: 0; left: 0; right: 0; padding: .6rem 1rem;
+  text-align: center; font: .75rem var(--ui); color: var(--muted);
+  background: linear-gradient(transparent, var(--bg) 60%);
+}
+
+@media print {
+  .bar, .foot { display: none; }
+  .page { padding: 0; max-width: none; }
+  body { background: #fff; color: #000; }
+}
+
+/* micro write */
+  #doc { outline: none; min-height: 60vh; caret-color: var(--accent); }
+  #doc { position: relative; }
+  #doc.empty::before { content: "Start writing…"; color: var(--muted); position: absolute; top: 0; left: 0; pointer-events: none; }
+  #doc h1 { font-size: 2rem; line-height: 1.25; margin: 2rem 0 1rem; font-weight: 600; }
+  #doc h2 { font-size: 1.35rem; line-height: 1.3; margin: 1.75rem 0 .5rem; font-weight: 600; }
+  #doc p { margin: 0 0 1rem; }
+  #doc ul { margin: 0 0 1rem; padding-left: 1.4rem; }
+  #doc > :first-child { margin-top: 0; }
 </style>
 </head>
 <body>
-<main>
-  <h1>micro write</h1>
-  <p>Coming soon.</p>
-  <a href="../">back to sketchbox</a>
-</main>
+<nav class="bar">
+  <button data-cmd="bold" title="Bold (Ctrl+B)"><b>B</b></button>
+  <button data-cmd="italic" title="Italic (Ctrl+I)"><i>I</i></button>
+  <button data-cmd="body" title="Body text (Ctrl+Alt+0)">¶</button>
+  <button data-cmd="h1" title="Heading 1 (Ctrl+Alt+1, or type # )">H1</button>
+  <button data-cmd="h2" title="Heading 2 (Ctrl+Alt+2, or type ## )">H2</button>
+  <button data-cmd="list" title="Bullet list (Ctrl+L, or type - )">•</button>
+  <span class="sep"></span>
+  <button data-cmd="new" title="New document">new</button>
+  <button data-cmd="open" title="Open .md or .html (Ctrl+O)">open</button>
+  <button data-cmd="save" title="Save as .md (Ctrl+S)">.md</button>
+  <button data-cmd="saveHtml" title="Save as .html (Ctrl+Shift+S)">.html</button>
+  <button data-cmd="print" title="Print or save as PDF (Ctrl+P)">print</button>
+  <button data-cmd="theme" title="Light / dark">◐</button>
+</nav>
+<main class="page"><div id="doc" contenteditable="true" spellcheck="true"></div></main>
+<footer class="foot" id="count"></footer>
+<input type="file" id="file" accept=".md,.markdown,.txt,.html,.htm" hidden>
+<script>
+const doc = document.getElementById('doc'), count = document.getElementById('count'), file = document.getElementById('file');
+const KEY = 'micro-write:doc', THEME = 'micro-office:theme';
+const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+                set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+const exec = (c, v) => document.execCommand(c, false, v);
+exec('defaultParagraphSeparator', 'p');
+
+/* ---- markdown: only headings, bullets, bold, italic ---- */
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const inlineMd = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\*(.+?)\*/g, '<i>$1</i>');
+function fromMd(md) {
+  let html = '', list = false;
+  for (const line of md.replace(/\r/g, '').split('\n')) {
+    const li = line.match(/^\s*[-*+]\s+(.*)/);
+    if (li) { if (!list) html += '<ul>'; list = true; html += `<li>${inlineMd(li[1])}</li>`; continue; }
+    if (list) { html += '</ul>'; list = false; }
+    const h = line.match(/^(#{1,6})\s+(.*)/);
+    if (h) html += h[1].length === 1 ? `<h1>${inlineMd(h[2])}</h1>` : `<h2>${inlineMd(h[2])}</h2>`;
+    else if (line.trim()) html += `<p>${inlineMd(line)}</p>`;
+  }
+  return html + (list ? '</ul>' : '');
+}
+function inlineToMd(node) {
+  let out = '';
+  for (const n of node.childNodes) {
+    if (n.nodeType === 3) { out += n.textContent; continue; }
+    if (n.nodeType !== 1) continue;
+    const t = n.tagName, inner = inlineToMd(n);
+    if (t === 'BR') out += ' ';
+    else if (!inner.trim()) out += inner;
+    else if (t === 'B' || t === 'STRONG') out += `**${inner}**`;
+    else if (t === 'I' || t === 'EM') out += `*${inner}*`;
+    else out += inner;
+  }
+  return out.replace(/ /g, ' ');
+}
+const BLOCKS = 'P,H1,H2,H3,H4,H5,H6,UL,OL,DIV,SECTION,ARTICLE,MAIN,BLOCKQUOTE';
+function toMd(root = doc, blocks = []) {
+  for (const n of root.childNodes) {
+    if (n.nodeType === 3) { if (n.textContent.trim()) blocks.push(n.textContent.trim()); continue; }
+    if (n.nodeType !== 1) continue;
+    const t = n.tagName;
+    if (/^(P|DIV|SECTION|ARTICLE|MAIN|BLOCKQUOTE)$/.test(t) && n.querySelector(BLOCKS)) { toMd(n, blocks); continue; }
+    const text = inlineToMd(n).trim();
+    if (t === 'UL' || t === 'OL') blocks.push([...n.querySelectorAll('li')].map(li => '- ' + inlineToMd(li).trim()).join('\n'));
+    else if (!text) continue;
+    else if (t === 'H1') blocks.push('# ' + text);
+    else if (/^H[2-6]$/.test(t)) blocks.push('## ' + text);
+    else blocks.push(text);
+  }
+  return root === doc ? blocks.join('\n\n') + '\n' : blocks;
+}
+
+/* ---- formatting ---- */
+const block = () => { let n = getSelection().anchorNode; while (n && n.parentNode !== doc) n = n.parentNode; return n; };
+const heading = tag => exec('formatBlock', block()?.tagName === tag.toUpperCase() ? 'p' : tag);
+/* lists by hand: execCommand nests <ul> inside <p> in Chrome */
+const caret = el => getSelection().collapse(el, el.childNodes.length);
+const filled = el => (el.firstChild || el.append(document.createElement('br')), el);
+function list() {
+  const b = block(); if (!b) return;
+  if (b.tagName === 'UL') {               // current item back to a paragraph, splitting the list
+    let li = getSelection().anchorNode; while (li.parentNode !== b) li = li.parentNode;
+    const p = document.createElement('p'), rest = document.createElement('ul');
+    while (li.nextSibling) rest.append(li.nextSibling);
+    p.append(...li.childNodes); li.remove(); b.after(filled(p));
+    if (rest.firstChild) p.after(rest);
+    if (!b.firstChild) b.remove();
+    return caret(p);
+  }
+  const prev = b.previousSibling, next = b.nextSibling, li = document.createElement('li');
+  const ul = prev?.tagName === 'UL' ? prev : document.createElement('ul');
+  if (ul !== prev) b.before(ul);
+  li.append(...(b.nodeType === 3 ? [b] : b.childNodes)); ul.append(filled(li)); b.remove();
+  if (next?.tagName === 'UL') { ul.append(...next.childNodes); next.remove(); }
+  caret(li);
+}
+const cmds = {
+  bold: () => exec('bold'), italic: () => exec('italic'),
+  body: () => block()?.tagName === 'UL' ? list() : exec('formatBlock', 'p'),
+  h1: () => heading('h1'), h2: () => heading('h2'), list,
+  new: () => {                            // click twice to clear (no confirm(), which previews block)
+    const btn = document.querySelector('[data-cmd=new]');
+    if (doc.textContent.trim() && btn.textContent !== 'sure?') {
+      btn.textContent = 'sure?'; return setTimeout(() => btn.textContent = 'new', 3000);
+    }
+    btn.textContent = 'new'; doc.innerHTML = ''; changed(); doc.focus();
+  },
+  open: () => file.click(),
+  save: () => download(toMd(), 'md', 'text/markdown'),
+  saveHtml: () => download(`<!doctype html>\n<meta charset="utf-8">\n<title>${esc(name())}</title>\n${fromMd(toMd())}\n`, 'html', 'text/html'),
+  print: () => print(),
+  theme: () => {
+    const cur = document.documentElement.dataset.theme, dark = cur ? cur === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.dataset.theme = dark ? 'light' : 'dark';
+    store.set(THEME, document.documentElement.dataset.theme);
+  },
+};
+document.querySelector('.bar').addEventListener('mousedown', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  e.preventDefault(); doc.focus(); cmds[b.dataset.cmd](); changed();
+});
+doc.addEventListener('keydown', e => {
+  const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
+  const map = mod && (e.altKey ? { '0': 'body', '1': 'h1', '2': 'h2' }[e.code.slice(-1)] :
+    e.shiftKey ? { s: 'saveHtml' }[k] : { l: 'list', s: 'save', o: 'open', '1': 'h1', '2': 'h2' }[k]);
+  if (map) { e.preventDefault(); cmds[map](); changed(); }
+});
+/* light up the buttons for the styles at the caret */
+function showState() {
+  if (!doc.contains(getSelection().anchorNode)) return;
+  const tag = block()?.tagName, heading = /^H[12]$/.test(tag), on = { bold: !heading && document.queryCommandState('bold'), italic: document.queryCommandState('italic'),
+    h1: tag === 'H1', h2: tag === 'H2', list: tag === 'UL', body: tag === 'P' };
+  for (const b of document.querySelectorAll('.bar [data-cmd]')) b.classList.toggle('on', !!on[b.dataset.cmd]);
+}
+document.addEventListener('selectionchange', showState);
+doc.addEventListener('input', showState);
+doc.addEventListener('keyup', showState);
+document.addEventListener('keydown', e => {   // save/open also work when the editor is not focused
+  if (e.target === doc || !(e.ctrlKey || e.metaKey)) return;
+  const k = e.key.toLowerCase();
+  if (k === 's') { e.preventDefault(); cmds[e.shiftKey ? 'saveHtml' : 'save'](); }
+  if (k === 'o') { e.preventDefault(); cmds.open(); }
+});
+/* markdown-style shortcuts: "# ", "## ", "- " at the start of a paragraph */
+doc.addEventListener('input', e => {
+  if (e.inputType !== 'insertText' || e.data !== ' ') return changed();
+  const b = block(), t = b?.textContent;
+  const fmt = b?.tagName === 'P' && { '# ': 'h1', '# ': 'h1', '## ': 'h2', '## ': 'h2', '- ': 'list', '- ': 'list', '* ': 'list', '* ': 'list' }[t];
+  if (fmt) { b.textContent = ''; b.appendChild(document.createElement('br')); getSelection().collapse(b, 0); cmds[fmt](); }
+  changed();
+});
+/* paste as plain text so only our four styles exist */
+doc.addEventListener('paste', e => { e.preventDefault(); exec('insertText', e.clipboardData.getData('text/plain')); });
+
+/* ---- files ---- */
+const name = () => (doc.querySelector('h1')?.textContent || doc.innerText).trim().split(/\s+/).slice(0, 6).join(' ').replace(/[\\/:*?"<>|]/g, '') || 'untitled';
+function download(text, ext, type) {
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([text], { type })), download: `${name()}.${ext}` });
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+file.addEventListener('change', async () => {
+  const f = file.files[0]; if (!f) return;
+  const text = await f.text(); file.value = '';
+  if (/\.html?$/i.test(f.name)) {      // keep only what micro write understands
+    const tmp = document.createElement('div');
+    tmp.innerHTML = new DOMParser().parseFromString(text, 'text/html').body.innerHTML;
+    doc.innerHTML = ''; doc.append(...tmp.childNodes);
+    doc.innerHTML = fromMd(toMd());
+  } else doc.innerHTML = fromMd(text);
+  changed();
+});
+
+/* ---- autosave + count ---- */
+let timer;
+function changed() {
+  const text = doc.innerText.trim(), words = text ? text.split(/\s+/).length : 0;
+  count.textContent = `${words} ${words === 1 ? 'word' : 'words'} · ${text.replace(/\s/g, '').length} characters`;
+  if (!doc.firstElementChild && !text) doc.innerHTML = '<p><br></p>';
+  doc.classList.toggle('empty', !text && doc.children.length === 1 && doc.firstElementChild.tagName === 'P');
+  clearTimeout(timer); timer = setTimeout(() => store.set(KEY, doc.innerHTML), 300);
+}
+addEventListener('beforeunload', () => store.set(KEY, doc.innerHTML));
+const theme = store.get(THEME); if (theme) document.documentElement.dataset.theme = theme;
+doc.innerHTML = store.get(KEY) || '';
+changed(); doc.focus();
+</script>
 </body>
 </html>

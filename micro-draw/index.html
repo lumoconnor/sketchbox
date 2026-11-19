@@ -3,21 +3,391 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>micro draw</title>
+<title>micro paint</title>
 <style>
-  :root { --page: #ece8e2; --ink: #222; --mute: #8a847c; }
-  html, body { margin: 0; height: 100%; }
-  body { background: var(--page); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; display: grid; place-items: center; text-align: center; padding: 16px; box-sizing: border-box; }
-  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
-  p { color: var(--mute); margin: 0 0 24px; }
-  a { color: inherit; }
+/* shared micro office styles: keep in sync with ../shared/micro.css */
+:root {
+  --bg: #fbfaf7;
+  --fg: #222;
+  --muted: #9a968e;
+  --line: #e6e2da;
+  --accent: #3b5bdb;
+  --font: Charter, "Iowan Old Style", Georgia, "Times New Roman", serif;
+  --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --col: 38rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1b1b1a; --fg: #e6e3dc; --muted: #77736b; --line: #2f2e2b; --accent: #8ea6ff;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1b1b1a; --fg: #e6e3dc; --muted: #77736b; --line: #2f2e2b; --accent: #8ea6ff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body { font: 1.125rem/1.7 var(--font); min-height: 100vh; }
+::selection { background: color-mix(in srgb, var(--accent) 25%, transparent); }
+
+.page { max-width: var(--col); margin: 0 auto; padding: 5rem 1rem 6rem; }
+
+/* toolbar: fades in on hover or focus */
+.bar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 2;
+  display: flex; justify-content: center; gap: .25rem; padding: .6rem;
+  flex-wrap: wrap; background: var(--bg);
+  font: .8rem var(--ui); opacity: .4; transition: opacity .2s;
+}
+.bar:hover, .bar:focus-within { opacity: 1; }
+@media (hover: none) { .bar { opacity: 1; } }  /* touch screens can't hover */
+.bar button {
+  font: inherit; color: var(--muted); background: none; border: 0;
+  padding: .3rem .55rem; border-radius: .3rem; cursor: pointer;
+}
+.bar button:hover { color: var(--fg); background: var(--line); }
+.bar .sep { width: 1px; background: var(--line); margin: .2rem .3rem; }
+
+/* quiet footer */
+.foot {
+  position: fixed; bottom: 0; left: 0; right: 0; padding: .6rem 1rem;
+  text-align: center; font: .75rem var(--ui); color: var(--muted);
+  background: linear-gradient(transparent, var(--bg) 60%);
+}
+
+@media print {
+  .bar, .foot { display: none; }
+  .page { padding: 0; max-width: none; }
+  body { background: #fff; color: #000; }
+}
+
+/* micro paint */
+  #stage { position: fixed; inset: 2.8rem 0 2.4rem; display: flex; align-items: center; justify-content: center; padding: .5rem 1rem; }
+  canvas { max-width: 100%; max-height: 100%; background: #fff; box-shadow: 0 0 0 1px var(--line); touch-action: none; cursor: crosshair; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  #hover { position: fixed; z-index: 1; border-radius: 50%; box-shadow: 0 0 0 1px #fff, 0 0 0 2px #0006; pointer-events: none; }
+  body { touch-action: manipulation; -webkit-user-select: none; user-select: none; }   /* no double-tap zoom or text selection */
+  .bar .sw { width: 1.9rem; height: 1.9rem; padding: 0; display: grid; place-items: center; }
+  .bar .sw i { display: block; width: 1rem; height: 1rem; border-radius: 50%; box-shadow: 0 0 0 1px color-mix(in srgb, var(--muted) 45%, transparent); }
+  .bar .on { background: var(--line); color: var(--fg); }
+  .bar .shuffle i { background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red); }
 </style>
 </head>
 <body>
-<main>
-  <h1>micro draw</h1>
-  <p>Coming soon.</p>
-  <a href="../">back to sketchbox</a>
-</main>
+<nav class="bar">
+  <button data-tool="ink" title="Ink pen (I)">ink</button>
+  <button data-tool="eraser" title="Eraser (E)">eraser</button>
+  <span class="sep"></span>
+  <span id="pal" style="display:contents"></span>
+  <button class="sw shuffle" data-cmd="shuffle" title="New colours and paper (R)"><i></i></button>
+  <span class="sep"></span>
+  <button data-cmd="undo" title="Undo (Ctrl+Z)">undo</button>
+  <button data-cmd="redo" title="Redo (Ctrl+Y)">redo</button>
+  <button data-cmd="clear" title="Clear the picture">clear</button>
+  <span class="sep"></span>
+  <button data-cmd="open" title="Open an image (Ctrl+O)">open</button>
+  <button data-cmd="save" title="Save as .png (Ctrl+S)">.png</button>
+  <button data-cmd="theme" title="Light / dark">◐</button>
+</nav>
+<div id="hover" hidden></div>
+<div id="stage"><canvas id="cv" width="2400" height="1600"></canvas></div>
+<footer class="foot" id="foot"></footer>
+<input type="file" id="file" accept="image/*" hidden>
+<script>
+const cv = document.getElementById('cv'), cx = cv.getContext('2d', { willReadFrequently: true });
+const foot = document.getElementById('foot'), file = document.getElementById('file');
+const K = 2;                             // canvas pixels per screen pixel: pictures are 2x for sharp retina screens
+const KEY = 'micro-paint:doc', THEME = 'micro-office:theme';
+const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+                set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+
+/* ---- colours: the palette and the paper. The shuffle button deals a new set that goes together:
+   a harmony of hues, two darks, a muted tone, five mids of different lightness, two lights,
+   on a near-neutral paper tinted toward the same hues. Built in OKLCH so lightness reads evenly. ---- */
+let palette = ['#222222', '#8a8a8a', '#e03131', '#f08c00', '#f2c200', '#2f9e44', '#1c7ed6', '#7048e8', '#c2255c', '#8b5a2b'];
+let paper = '#ffffff', ci = 0;          // ci: which swatch is picked
+function oklch(L, C, h) {               // to a hex colour, pulling chroma in until it fits sRGB
+  for (;; C *= .92) {
+    const a = C * Math.cos(h * Math.PI / 180), b = C * Math.sin(h * Math.PI / 180);
+    const l = (L + .3963377774 * a + .2158037573 * b) ** 3, m = (L - .1055613458 * a - .0638541728 * b) ** 3, s = (L - .0894841775 * a - 1.291485548 * b) ** 3;
+    const rgb = [4.0767416621 * l - 3.3077115913 * m + .2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - .3413193965 * s, -.0041960863 * l - .7034186147 * m + 1.707614701 * s];
+    if (C > .001 && rgb.some(v => v < -.0005 || v > 1.0005)) continue;
+    return '#' + rgb.map(v => { v = Math.min(1, Math.max(0, v)); v = v <= .0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - .055; return Math.round(v * 255).toString(16).padStart(2, '0'); }).join('');
+  }
+}
+function deal() {
+  const rnd = (a, b) => a + Math.random() * (b - a), pick = a => a[Math.random() * a.length | 0];
+  const h = rnd(0, 360), offs = pick([[0, 30, -30], [0, 180, 20], [0, 150, 210], [0, 120, 240], [0, 40, 200], [0, 90, 180, 270]]);
+  const hue = i => (h + offs[i % offs.length] + rnd(-12, 12) + 360) % 360;
+  const dark = Math.random() < .15;     // now and then, dark paper
+  const mids = [.5, .58, .65, .72, .79].sort(() => Math.random() - .5).map((L, i) => [L, rnd(.1, .19), hue(i)]).sort((a, b) => a[2] - b[2]);
+  paper = dark ? oklch(rnd(.19, .25), rnd(.008, .02), hue(0)) : oklch(rnd(.935, .975), rnd(.004, .015), hue(rnd(0, 3) | 0));
+  palette = [
+    dark ? [rnd(.94, .97), rnd(.01, .02), hue(0)] : [rnd(.2, .26), rnd(.01, .035), hue(0)],   // the ink: near black, or near white on dark paper
+    [dark ? rnd(.74, .84) : rnd(.3, .4), rnd(.06, .12), hue(1)],                             // a deep colour (a pale one on dark paper)
+    [rnd(.5, .62), rnd(.02, .045), hue(2)],                                                  // a muted grey-ish tone
+    ...mids,
+    [rnd(.78, .84), rnd(.05, .09), hue(2)],                                                  // two lights, still visible on pale paper
+    [rnd(.84, .89), rnd(.03, .06), hue(0)],
+  ].map(c => oklch(...c));
+  paint();
+}
+function paint() {                      // show the palette and paper
+  document.getElementById('pal').innerHTML = palette.map((c, i) => `<button class="sw" data-ci="${i}" title="${c}"><i style="background:${c}"></i></button>`).join('');
+  cv.style.background = paper; ui();
+}
+const color = () => palette[ci];
+
+/* ---- tool state ---- */
+let tool = 'ink', fname = 'untitled';
+function ui() {
+  document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('on', b.dataset.tool === tool));
+  document.querySelectorAll('[data-ci]').forEach(b => b.classList.toggle('on', tool !== 'eraser' && +b.dataset.ci === ci));
+  foot.textContent = `${fname} · ${cv.width} × ${cv.height} · ${tool}`;
+}
+
+/* ---- undo: a stroke stores only the patch it painted over; clear and open store the whole picture ---- */
+let undos = [], redos = [];
+const snap = (x = 0, y = 0, w = cv.width, h = cv.height) => ({ cw: cv.width, ch: cv.height, x, y, img: cx.getImageData(x, y, w, h) });
+function push(s) {
+  undos.push(s); redos = [];
+  let bytes = 0;                                       // keep ~150 MB at most, which an iPad can hold
+  for (let i = undos.length - 1; i >= 0; i--) if ((bytes += undos[i].img.data.length) > 15e7) { undos.splice(0, i + 1); break; }
+}
+const checkpoint = () => push(snap());
+function swap(from, to) {
+  const s = from.pop(); if (!s) return;
+  const same = s.cw === cv.width && s.ch === cv.height;
+  to.push(same ? snap(s.x, s.y, s.img.width, s.img.height) : snap());
+  if (!same) { cv.width = s.cw; cv.height = s.ch; }
+  cx.putImageData(s.img, s.x, s.y); changed();
+}
+
+/* ---- tools: each turns a list of points into marks on the canvas ----
+   A stroke is redrawn whole on every frame over a copy of the picture taken at pen-down,
+   so a tool can reshape the whole line as it grows (the ink pen's tip does). */
+const TOOLS = {
+  /* ink: a fine liner with a near-even line. Direction (a nib held at 45°), pressure and speed
+     each nudge the width by a hair; `vary` sets how much in all (0 = perfectly even).
+     The line eases in at the start and a quick lift flicks off to a short point. */
+  ink: {
+    nib: 3 * K, vary: .08, angle: -Math.PI / 4,
+    add(s, x, y, t, pr) {
+      const q = s.pts.at(-1);
+      if (!q) return s.pts.push({ x, y, t, w: this.nib, L: 0, v: 0, dx: 0, dy: 0 });
+      const d = Math.hypot(x - q.x, y - q.y); if (d < 1.5 * K) return;              // spaced points: hand jitter can't twist the line
+      const v = q.v * .75 + Math.min(d / K / Math.max(t - q.t, 1), 6) * .25;          // smoothed speed, screen px per ms
+      const dx = q.dx * .6 + (x - q.x) / d * .4, dy = q.dy * .6 + (y - q.y) / d * .4;    // smoothed direction
+      const across = Math.abs(Math.sin(Math.atan2(dy, dx) - this.angle)) * 2 - 1;     // -1 along the nib edge, 1 across it
+      const press = pr == null ? 0 : pr * 2 - 1, speed = Math.max(-1, Math.min(1, .6 - v));
+      const L = q.L + d / K;
+      const w = this.nib * (1 + this.vary * (.5 * across + .3 * press + .2 * speed));
+      s.pts.push({ x, y, t, L, v, dx, dy, w: q.w * .55 + w * .45 });
+    },
+    draw(s) {
+      const P = s.pts, n = P.length; if (!n) return;
+      const end = P[n - 1], tip = Math.min(14, Math.max(3, end.v * 8));        // in screen px, like L                // fast lift, longer tip
+      const r = P.map(p => p.w / 2 * (.7 + .3 * Math.min(1, p.L / 6)) * (.55 + .45 * Math.min(1, (end.L - p.L) / tip)));
+      cx.fillStyle = color(); cx.beginPath();
+      if (n < 3) { cx.arc(P[0].x, P[0].y, this.nib / 2, 0, 7); return cx.fill(); }
+      const L = [], R = [];
+      P.forEach((p, i) => {
+        const a = P[Math.max(0, i - 2)], b = P[Math.min(n - 1, i + 2)], d = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+        const nx = -(b.y - a.y) / d, ny = (b.x - a.x) / d;
+        L.push([p.x + nx * r[i], p.y + ny * r[i]]); R.push([p.x - nx * r[i], p.y - ny * r[i]]);
+      });
+      const side = (pts, first) => {                                                    // smooth curve through midpoints
+        if (first) cx.moveTo(...pts[0]); else cx.lineTo(...pts[0]);
+        for (let i = 1; i < pts.length - 1; i++) cx.quadraticCurveTo(...pts[i], (pts[i][0] + pts[i + 1][0]) / 2, (pts[i][1] + pts[i + 1][1]) / 2);
+        cx.lineTo(...pts.at(-1));
+      };
+      side(L, true); side(R.reverse(), false); cx.closePath(); cx.fill();
+      cx.beginPath();                                                                   // round the ends
+      for (const i of [0, n - 1]) { cx.moveTo(P[i].x + r[i], P[i].y); cx.arc(P[i].x, P[i].y, r[i], 0, 7); }
+      cx.fill();
+    },
+  },
+  /* eraser: rubs the ink away, back to the paper (the ink sits on a clear layer over it) */
+  eraser: {
+    add(s, x, y, t, pr) { s.pts.push({ x, y, w: 30 * K * (pr == null ? 1 : .4 + pr * 1.2) }); },
+    draw(s) {
+      cx.globalCompositeOperation = 'destination-out'; cx.lineCap = cx.lineJoin = 'round';
+      s.pts.forEach((p, i) => { const q = s.pts[i - 1] || p; cx.lineWidth = (p.w + q.w) / 2; cx.beginPath(); cx.moveTo(q.x, q.y); cx.lineTo(p.x, p.y); cx.stroke(); });
+      cx.globalCompositeOperation = 'source-over';
+    },
+  },
+};
+
+/* ---- drawing: pointer events cover mouse, touch and Apple Pencil or other styluses (with pressure) ----
+   Palm rejection: once a stylus has drawn, one finger no longer draws; a contact as wide as a palm never does;
+   and a stylus landing while a finger or palm is mid-stroke wipes that stroke and takes over.
+   Fingers: tap with two to undo, three to redo. A stylus hovering (iPad Pro) shows where the ink will land. */
+let pen = null, stylus = false;          // pen: the stroke in progress; stylus: a stylus has drawn here
+const base = document.createElement('canvas'), bx = base.getContext('2d');
+const fingers = new Map();               // touch contacts on the canvas, for gestures
+let gesture = null;                      // { n: most fingers down, t: start, moved }
+const hover = document.getElementById('hover');
+const at = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; };
+function feed(e) {
+  const [x, y] = at(e), pr = e.pointerType === 'pen' && e.pressure > 0 ? e.pressure : null;
+  pen.raw = [x, y, pr];
+  steady(pen, x, y, e.timeStamp);
+  TOOLS[tool].add(pen, pen.sx, pen.sy, e.timeStamp, pr); pen.moved = e.timeStamp; pen.dirty = true;
+}
+/* steadying: a "one euro" filter. Slow, careful movement is smoothed hard, which takes out tremor
+   and keeps straight lines straight; fast movement (scribbling, shading) passes almost untouched. */
+function steady(p, x, y, t) {
+  const dt = Math.max(1, t - (p.st ?? t - 8)) / 1000; p.st = t;
+  const a = hz => 1 / (1 + 1 / (2 * Math.PI * hz * dt));
+  const v = Math.hypot(x - (p.rx ?? x), y - (p.ry ?? y)) / K / dt;      // pen speed, screen px per second
+  p.rx = x; p.ry = y;
+  p.sv = (p.sv ?? v) + (v - (p.sv ?? v)) * a(1);
+  const k = a(1 + .012 * p.sv);
+  p.sx += (x - p.sx) * k; p.sy += (y - p.sy) * k;
+}
+function frame(now) {
+  if (!pen) return;
+  if (now - pen.moved > 60) { const [x, y, pr] = pen.raw; pen.sx = x; pen.sy = y; TOOLS[tool].add(pen, x, y, now, pr); pen.dirty = true; }  // resting: catch up
+  if (pen.dirty) { rewind(); TOOLS[tool].draw(pen); pen.dirty = false; }
+  requestAnimationFrame(frame);
+}
+function start(e) {
+  try { cv.setPointerCapture(e.pointerId); } catch {}
+  base.width = cv.width; base.height = cv.height; bx.drawImage(cv, 0, 0);
+  const [x, y] = at(e);
+  pen = { id: e.pointerId, type: e.pointerType, pts: [], sx: x, sy: y };
+  feed(e); requestAnimationFrame(frame);
+}
+const rewind = () => { cx.clearRect(0, 0, cv.width, cv.height); cx.drawImage(base, 0, 0); };   // back to the picture before this stroke
+function abort() { if (pen) { rewind(); pen = null; } }       // as if the stroke never happened
+const palm = e => e.pointerType === 'touch' && Math.max(e.width, e.height) > 40;
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault(); hover.hidden = true;
+  if (e.pointerType === 'touch') {
+    fingers.set(e.pointerId, [e.clientX, e.clientY]);
+    if (fingers.size > 1) {                                                 // a gesture, not a stroke
+      if (pen?.type === 'touch') abort();
+      gesture = gesture || { n: 0, t: e.timeStamp, moved: false };
+      gesture.n = Math.max(gesture.n, fingers.size); return;
+    }
+    gesture = { n: 1, t: e.timeStamp, moved: false };
+    if (stylus || palm(e) || pen) return;
+  } else {
+    if (e.button > 0) return;
+    if (e.pointerType === 'pen') { stylus = true; if (pen?.type === 'touch') abort(); }
+    if (pen) return;
+  }
+  start(e);
+});
+cv.addEventListener('pointermove', e => {
+  if (e.pointerType === 'pen' && !pen && !e.buttons) {                      // stylus hovering above the screen
+    const r = cv.getBoundingClientRect(), d = Math.max(4, (TOOLS[tool].nib || 30 * K) * r.width / cv.width);
+    Object.assign(hover.style, { left: e.clientX - d / 2 + 'px', top: e.clientY - d / 2 + 'px', width: d + 'px', height: d + 'px' });
+    hover.hidden = false;
+  }
+  const f = fingers.get(e.pointerId);
+  if (f && gesture && Math.hypot(e.clientX - f[0], e.clientY - f[1]) > 12) gesture.moved = true;
+  if (!pen || e.pointerId !== pen.id) return;
+  if (palm(e)) return abort();                                              // the contact spread out: a palm after all
+  const all = e.getCoalescedEvents?.();
+  for (const p of all?.length ? all : [e]) feed(p);
+});
+const end = e => {
+  if (fingers.delete(e.pointerId) && !fingers.size && gesture) {
+    const g = gesture; gesture = null;
+    if (g.n > 1 && !g.moved && e.timeStamp - g.t < 600) return cmds[g.n === 2 ? 'undo' : 'redo']();
+  }
+  if (!pen || e.pointerId !== pen.id) return;
+  const [x, y, pr] = pen.raw; TOOLS[tool].add(pen, x, y, e.timeStamp, pr);
+  rewind(); TOOLS[tool].draw(pen);
+  const xs = pen.pts.map(p => p.x), ys = pen.pts.map(p => p.y), pad = 40 * K;   // undo keeps just the patch drawn on
+  const x0 = Math.max(0, Math.floor(Math.min(...xs) - pad)), y0 = Math.max(0, Math.floor(Math.min(...ys) - pad));
+  const x1 = Math.min(cv.width, Math.ceil(Math.max(...xs) + pad)), y1 = Math.min(cv.height, Math.ceil(Math.max(...ys) + pad));
+  if (x1 > x0 && y1 > y0) push({ cw: cv.width, ch: cv.height, x: x0, y: y0, img: bx.getImageData(x0, y0, x1 - x0, y1 - y0) });
+  pen = null; changed();
+};
+cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+cv.addEventListener('pointerleave', () => hover.hidden = true);
+cv.addEventListener('touchstart', e => e.preventDefault(), { passive: false });   // no iOS magnifier, callout or selection
+cv.addEventListener('contextmenu', e => e.preventDefault());
+
+/* ---- picture ---- */
+function blank(w = cv.width, h = cv.height) { cv.width = w; cv.height = h; cx.clearRect(0, 0, w, h); }
+function load(src, name, scale = 1) {
+  const img = new Image();
+  img.onload = () => {
+    const k = Math.min(scale, 4096 / Math.max(img.width, img.height)), w = Math.round(img.width * k), h = Math.round(img.height * k);
+    if (name) { checkpoint(); fname = name; }
+    blank(w, h); cx.drawImage(img, 0, 0, w, h); changed(!name);
+  };
+  img.src = src;
+}
+async function openFile(f) {
+  if (!f || !f.type.startsWith('image/')) return;
+  const url = URL.createObjectURL(f);
+  load(url, f.name.replace(/\.[^.]*$/, '') || 'untitled');
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+file.addEventListener('change', () => { openFile(file.files[0]); file.value = ''; });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', e => { e.preventDefault(); openFile(e.dataTransfer.files[0]); });
+
+/* ---- commands ---- */
+let clearTimer;
+const cmds = {
+  undo: () => swap(undos, redos),
+  redo: () => swap(redos, undos),
+  clear: () => {                          // click twice to clear (no confirm(), which previews block)
+    const btn = document.querySelector('[data-cmd=clear]');
+    if (btn.textContent !== 'sure?') { btn.textContent = 'sure?'; clearTimer = setTimeout(() => btn.textContent = 'clear', 3000); return; }
+    clearTimeout(clearTimer); btn.textContent = 'clear';
+    checkpoint(); blank(); fname = 'untitled'; changed();
+  },
+  open: () => file.click(),
+  shuffle: () => { deal(); changed(); },
+  save: () => flat().toBlob(b => {
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(b), download: `${fname}.png` });
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }),
+  theme: () => {
+    const now = document.documentElement.dataset.theme, dark = now ? now === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.dataset.theme = dark ? 'light' : 'dark';
+    store.set(THEME, document.documentElement.dataset.theme);
+  },
+};
+function flat() {                        // the picture on its paper, for saving
+  const f = Object.assign(document.createElement('canvas'), { width: cv.width, height: cv.height }), fx = f.getContext('2d');
+  fx.fillStyle = paper; fx.fillRect(0, 0, f.width, f.height); fx.drawImage(cv, 0, 0); return f;
+}
+document.querySelector('.bar').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.tool) { tool = b.dataset.tool; ui(); }
+  else if (b.dataset.ci) { ci = +b.dataset.ci; if (tool === 'eraser') tool = 'ink'; ui(); }
+  else if (b.dataset.cmd) cmds[b.dataset.cmd]();
+});
+document.addEventListener('keydown', e => {
+  const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
+  if (mod) {
+    const c = { s: 'save', o: 'open', z: e.shiftKey ? 'redo' : 'undo', y: 'redo' }[k];
+    if (c) { e.preventDefault(); cmds[c](); }
+  }
+  else if (k === 'e') { tool = 'eraser'; ui(); }
+  else if (k === 'i') { tool = 'ink'; ui(); }
+  else if (k === 'r') cmds.shuffle();
+});
+
+/* ---- autosave: the picture as a PNG data URL ---- */
+let timer;
+function changed(quiet) { ui(); if (quiet) return; clearTimeout(timer); timer = setTimeout(save, 500); }
+const save = () => store.set(KEY, JSON.stringify({ fname, k: K, png: cv.toDataURL(), palette, paper, ci }));
+addEventListener('beforeunload', () => { if (timer) save(); });
+const theme = store.get(THEME); if (theme) document.documentElement.dataset.theme = theme;
+const bar = document.querySelector('.bar'), stage = document.getElementById('stage');
+new ResizeObserver(() => stage.style.top = bar.offsetHeight + 'px').observe(bar);  // the bar wraps on narrow screens
+blank();
+let d = null; try { d = JSON.parse(store.get(KEY)); } catch {}
+if (d?.palette) ({ palette, paper, ci } = d);
+paint();
+if (d?.png) { fname = d.fname || fname; load(d.png, null, K / (d.k || 1)); }
+</script>
 </body>
 </html>
